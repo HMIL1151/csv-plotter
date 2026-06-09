@@ -156,9 +156,14 @@ class CsvPlotter:
         )
         self.end_slider.grid(row=3, column=1, sticky="ew", padx=6, pady=2)
 
+        btn_row = ttk.Frame(self.ctrl)
+        btn_row.pack(pady=(2, 2))
         ttk.Button(
-            self.ctrl, text="⟳  Refresh Plot", command=self._refresh_plot,
-        ).pack(pady=(2, 2))
+            btn_row, text="⟳  Refresh Plot", command=self._refresh_plot,
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            btn_row, text="↓  Export CSV", command=self._export_csv,
+        ).pack(side="left", padx=4)
 
         # ── Notebook: Columns | Labels ────────────────────────────────────────
         nb = ttk.Notebook(self.ctrl)
@@ -597,6 +602,58 @@ class CsvPlotter:
                       font=("", 8)).pack(side="left", padx=2)
             ttk.Entry(row, textvariable=self._unit_vars[col],  width=7,
                       font=("", 8)).pack(side="left", padx=2)
+
+    # ── Export ─────────────────────────────────────────────────────────────────
+
+    def _export_csv(self):
+        if self.df is None:
+            messagebox.showwarning("Export", "No CSV loaded.")
+            return
+
+        active = [col for col, var, _cb, _grp in self._cb_rows if var.get()]
+        if not active:
+            messagebox.showwarning("Export", "No columns selected.")
+            return
+
+        x_col = self._x_col_var.get()
+        t0 = min(self.start_var.get(), self.end_var.get())
+        t1 = max(self.start_var.get(), self.end_var.get())
+
+        x_data  = pd.to_numeric(self.df[x_col], errors="coerce")
+        mask    = (x_data >= t0) & (x_data <= t1)
+        df_view = self.df[mask][[x_col] + active].copy()
+
+        # Build rename map: only rename columns where the user has set a custom label
+        rename = {}
+        x_lbl_override = self._x_label_var.get().strip()
+        x_unit_override = self._x_unit_var.get().strip()
+        if x_lbl_override or x_unit_override:
+            x_display = f"{x_lbl_override or x_col} [{x_unit_override}]" if x_unit_override else (x_lbl_override or x_col)
+            rename[x_col] = x_display
+        for col in active:
+            lv = self._label_vars.get(col)
+            uv = self._unit_vars.get(col)
+            label = lv.get().strip() if lv else ""
+            units = uv.get().strip() if uv else ""
+            if label or units:
+                rename[col] = f"{label or col} [{units}]" if units else (label or col)
+        if rename:
+            df_view = df_view.rename(columns=rename)
+
+        path = filedialog.asksaveasfilename(
+            title="Export CSV",
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            initialfile=self._csv_filename.replace(".csv", "_export.csv"),
+        )
+        if not path:
+            return
+
+        try:
+            df_view.to_csv(path, index=False)
+            messagebox.showinfo("Export", f"Saved {len(df_view)} rows to:\n{path}")
+        except Exception as exc:
+            messagebox.showerror("Export Error", str(exc))
 
     # ── Plot ──────────────────────────────────────────────────────────────────
 
