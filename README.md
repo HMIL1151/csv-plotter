@@ -1,12 +1,86 @@
 # CSV Plotter
 
-A quick, interactive plotting tool for exploring and visualising long CSV files. Built with Python, tkinter, pandas, and matplotlib.
+A quick, interactive plotting tool for exploring, annotating and exporting long CSV files.
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)
+There are two versions:
+
+| | **Web app** (`web/`), recommended | **Desktop app** (`csv_plotter.py`) |
+|---|---|---|
+| Run | Open `web/index.html` in a browser | `python csv_plotter.py` |
+| Install | Nothing | Python, pandas, matplotlib |
+| Editing | Click-and-drag on the plot | Dialogs and fields |
+| Output | PNG, SVG, clipboard, CSV | CSV (plus matplotlib's save button) |
+
+Annotation JSON files work in both.
 
 ---
 
-## Features
+## Web app
+
+![No install](https://img.shields.io/badge/install-none-brightgreen) ![Plotly](https://img.shields.io/badge/Plotly.js-2.35-blue)
+
+### Running it
+
+Double-click **`web/index.html`**, or drag it into Chrome, Edge or Firefox. That's it: there's no server, no build step and nothing to install. Your data stays in the browser.
+
+- Plotly is loaded from its CDN the first time. To work fully offline, put a copy in `web/vendor/` (see [`web/vendor/README.md`](web/vendor/README.md)).
+- Open `web/index.html?sample` to start with the built-in sample data.
+
+### Features
+
+**Data**
+- Open a CSV with the button or drag it onto the window. Delimiters (`,` `;` tab `|`) and column types are detected automatically.
+- The X axis can be numeric or **date/time**. Text columns are shown but can't be plotted.
+- Grouped column picker (`sensor_1`, `sensor_2`, … are grouped under `sensor`), with group tick boxes, filter, All/None and collapse.
+- Set the visible X range with the dual slider, by typing start/end values, or by **dragging on the plot to zoom** (double-click resets). All three stay in sync.
+- Handles large files: a 14 MB, 200k-row file parses in about 0.2 s, and plots switch to WebGL above 20k points.
+
+**Professional output**
+- Themes: Clean, Publication, Soft grey, Dark, Presentation. Palettes include colour-blind-safe Okabe–Ito.
+- Layouts: **separate colour-coded Y axes** (balanced left/right), **one shared Y axis**, or **stacked panels** with a shared X axis.
+- Title, X label/units, and per-series label, units, colour and line style. Drag series to reorder them (and their axes).
+- Line width, font size, grid, data points and legend position.
+- **Export** PNG (with high-resolution scale), SVG (vector), copy to clipboard, or CSV of the visible range with your labels as headers. The export size is set separately from the window size.
+
+**Annotations (click and drag)**
+- Nine types: text box, arrow + text, span bracket (arrows or `|—|` dimension ends), shaded X span, shaded Y span, vertical line, horizontal line, point marker, rectangle.
+- **Create**: pick a tool (toolbar or keyboard shortcut), then click or drag on the plot. Arrows and markers snap to the nearest data point.
+- **Edit**:
+  - Drag anything to move it.
+  - Drag span or rectangle edges and corners, or bracket ends, to resize.
+  - Drag a label to move just its text (a leader line is added).
+  - Double-click to edit text in place, or right-click for more options.
+- **Inspector**: the panel for the selected annotation has its text (with `<b>`, `<i>`, `<sup>` support), exact positions, colours, font size, box style, line style and width, arrow heads, fill opacity, marker shape and label offset.
+- **Following the data**: annotations attach to the series you drew them near, so they stay with the data when you zoom or change the range. Switching an annotation's Y axis converts its values.
+- **Undo/redo** for everything, plus delete, duplicate, nudge with arrow keys, and bring to front / send to back.
+
+**Saving work**
+- Your work is autosaved in the browser for each file name and restored when you reopen the same file.
+- **Project ▾**: save or open a project file (labels, styles, selection, annotations), and save or load annotations. These are the same annotation files the desktop app uses.
+
+Press **?** in the app for the full list of shortcuts.
+
+### Development
+
+The code is plain JavaScript with no dependencies or build step:
+
+```
+web/
+├── index.html       # Page layout
+├── css/styles.css
+├── js/core.js       # Pure logic: CSV parsing, figure building, hit-testing, drag maths (unit tested)
+├── js/app.js        # UI controller: DOM, Plotly and mouse/keyboard handling
+├── tests/           # node --test suite for core.js
+└── vendor/          # Optional local Plotly copy (git-ignored)
+```
+
+Run the tests with `cd web && npm test` (Node 18+).
+
+---
+
+## Desktop app (Python)
+
+### Features
 
 - **Two-window layout** – a compact **Controls** panel alongside a full-size **Plot** window.
 - **File browser** – open any CSV file via a standard file dialog (or pass a path on the command line).
@@ -24,7 +98,7 @@ A quick, interactive plotting tool for exploring and visualising long CSV files.
 
 ---
 
-## Requirements
+### Requirements
 
 | Package | Version |
 |---------|---------|
@@ -47,7 +121,7 @@ pip install pandas matplotlib
 
 ---
 
-## Usage
+### Usage
 
 ```bash
 # Launch with the file browser
@@ -57,7 +131,7 @@ python csv_plotter.py
 python csv_plotter.py path/to/data.csv
 ```
 
-### Typical workflow
+#### Typical workflow
 
 1. Click **Browse…** (or pass a path) to load a CSV.
 2. Select the **X Column** (defaults to the first column).
@@ -68,7 +142,7 @@ python csv_plotter.py path/to/data.csv
 7. Click **↓ Export CSV** to save the visible slice with renamed headers.
 8. *(Optional)* Add annotations from the **Annotations** tab (**+ Add ▾**) or by right-clicking the plot.
 
-### Annotations
+#### Annotations
 
 - **Adding** – use **+ Add ▾** in the Annotations tab, or right-click anywhere on the plot to add one at that spot. (Right-click is ignored while the toolbar's pan/zoom mode is active.)
 - **Editing** – double-click a row (or select it and click **Edit**). In the editor, **Pick point 1 / 2** lets you set positions by clicking the plot. **Apply** previews the change; **OK** applies it and closes the editor.
@@ -82,13 +156,14 @@ python csv_plotter.py path/to/data.csv
 
 ```
 csv-plotter/
-├── csv_plotter.py        # Application (controls + plot windows)
-├── annotations.py        # Annotation model, JSON I/O, matplotlib rendering
-├── annotation_dialog.py  # Tk editor dialog for a single annotation
-└── tests/                # unittest suite
+├── web/                  # Browser app (see above)
+├── csv_plotter.py        # Desktop app (controls + plot windows)
+├── annotations.py        # Desktop annotation model, JSON I/O, matplotlib rendering
+├── annotation_dialog.py  # Desktop annotation editor dialog
+└── tests/                # Desktop unittest suite
 ```
 
-Run the tests with:
+Run the desktop tests with:
 
 ```bash
 python -m unittest discover -s tests -t .
