@@ -1455,7 +1455,21 @@
   renderPanels();
   updateUndoButtons();
 
-  if (/[?&]sample\b/.test(location.search)) loadSample();
+  const params = new URLSearchParams(location.search);
+  if (params.get('file')) loadFromUrl(params.get('file'));
+  else if (params.has('sample')) loadSample();
+
+  /** Load a CSV served over HTTP (used by `python web/launch.py data.csv`). */
+  async function loadFromUrl(url) {
+    const name = decodeURIComponent(url.split('/').pop()) || 'data.csv';
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      loadText(await res.text(), name);
+    } catch (err) {
+      toast(`Could not load ${name}: ${err.message}`, { error: true, ms: 8000 });
+    }
+  }
 
   // Expose for debugging / automated smoke tests
   window.CsvPlotterApp = { state, getConv, labelRects, loadText, loadSample, commit, select, setTool, actions, exportImage };

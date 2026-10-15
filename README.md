@@ -6,7 +6,7 @@ There are two versions:
 
 | | **Web app** (`web/`), recommended | **Desktop app** (`csv_plotter.py`) |
 |---|---|---|
-| Run | Open `web/index.html` in a browser | `python csv_plotter.py` |
+| Run | `python web/launch.py data.csv`, or open `web/index.html` | `python csv_plotter.py` |
 | Install | Nothing | Python, pandas, matplotlib |
 | Editing | Click-and-drag on the plot | Dialogs and fields |
 | Output | PNG, SVG, clipboard, CSV | CSV (plus matplotlib's save button) |
@@ -21,7 +21,20 @@ Annotation JSON files work in both.
 
 ### Running it
 
-Double-click **`web/index.html`**, or drag it into Chrome, Edge or Firefox. That's it: there's no server, no build step and nothing to install. Your data stays in the browser.
+**From the terminal** (needs only Python 3.10+, no packages):
+
+```bash
+python web/launch.py                  # open the app in your browser
+python web/launch.py path/to/data.csv # open it with a file already loaded
+```
+
+This serves the app at `http://127.0.0.1:<port>`, which only this computer can reach, and opens your default browser. Press **Ctrl+C** to stop. Options:
+- `--port 8000` uses a fixed port.
+- `--no-browser` just prints the URL.
+
+Only the CSV you name is served. On Windows, use `py` if `python` isn't on your PATH.
+
+**Or without a terminal:** double-click **`web/index.html`**, or drag it into Chrome, Edge or Firefox. There's no server, no build step and nothing to install. Your data stays in the browser.
 
 - Plotly is loaded from its CDN the first time. To work fully offline, put a copy in `web/vendor/` (see [`web/vendor/README.md`](web/vendor/README.md)).
 - Open `web/index.html?sample` to start with the built-in sample data.
@@ -70,6 +83,7 @@ web/
 ├── css/styles.css
 ├── js/core.js       # Pure logic: CSV parsing, figure building, hit-testing, drag maths (unit tested)
 ├── js/app.js        # UI controller: DOM, Plotly and mouse/keyboard handling
+├── launch.py        # Terminal launcher: local server + optional CSV preload
 ├── tests/           # node --test suite for core.js
 └── vendor/          # Optional local Plotly copy (git-ignored)
 ```
