@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CSV Plotter</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232563eb'/%3E%3Cpath d='M6 22l6-7 5 4 9-11' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo"></span>CSV Plotter</div>
+    <button id="btn-open" class="btn primary" title="Open a CSV file (Ctrl+O)">Open CSV…</button>
+    <input type="file" id="file-input" accept=".csv,.tsv,.txt,text/csv" hidden>
+    <button id="btn-sample" class="btn ghost">Sample data</button>
+    <span id="file-name" class="file-name"></span>
+    <div class="spacer"></div>
+    <div class="btn-group">
+      <button id="btn-undo" class="btn icon" title="Undo (Ctrl+Z)" disabled>↶</button>
+      <button id="btn-redo" class="btn icon" title="Redo (Ctrl+Shift+Z)" disabled>↷</button>
+    </div>
+    <div class="dropdown">
+      <button class="btn">Project ▾</button>
+      <div class="dropdown-menu">
+        <button data-action="save-project">Save project…</button>
+        <button data-action="open-project">Open project…</button>
+        <hr>
+        <button data-action="save-annotations">Save annotations…</button>
+        <button data-action="load-annotations">Load annotations…</button>
+        <hr>
+        <button data-action="reset-project">Start fresh (clear labels &amp; annotations)</button>
+      </div>
+    </div>
+    <div class="dropdown">
+      <button class="btn primary">Export ▾</button>
+      <div class="dropdown-menu right">
+        <button data-action="export-png">PNG image</button>
+        <button data-action="export-svg">SVG (vector)</button>
+        <button data-action="copy-png">Copy image to clipboard</button>
+        <hr>
+        <button data-action="export-csv">CSV of visible range</button>
+      </div>
+    </div>
+    <button id="btn-help" class="btn icon" title="Help &amp; shortcuts (?)">?</button>
+    <input type="file" id="json-input" accept=".json,application/json" hidden>
+  </header>
+
+  <main class="layout">
+    <!-- ── Left sidebar ─────────────────────────────────────────────────── -->
+    <aside class="sidebar">
+      <nav class="tabs" role="tablist">
+        <button class="tab active" data-tab="data">Data</button>
+        <button class="tab" data-tab="series">Labels</button>
+        <button class="tab" data-tab="style">Style</button>
+        <button class="tab" data-tab="notes">Annotations <span id="ann-count" class="badge"></span></button>
+      </nav>
+
+      <section class="panel active" data-panel="data">
+        <label class="field">
+          <span>X axis column</span>
+          <select id="x-col"></select>
+        </label>
+
+        <div class="field">
+          <div class="field-head"><span>Visible X range</span><button id="range-reset" class="link">Reset</button></div>
+          <div class="dual-range" id="dual-range">
+            <div class="dual-track"><div class="dual-fill" id="range-fill"></div></div>
+            <input type="range" id="range-lo" min="0" max="1000" value="0" aria-label="Range start">
+            <input type="range" id="range-hi" min="0" max="1000" value="1000" aria-label="Range end">
+          </div>
+          <div class="row2">
+            <input id="range-lo-text" class="mono" aria-label="Start value">
+            <input id="range-hi-text" class="mono" aria-label="End value">
+          </div>
+          <p class="hint">Tip: drag on the plot to zoom, double-click to reset.</p>
+        </div>
+
+        <div class="field grow">
+          <div class="field-head"><span>Columns</span><span id="sel-count" class="muted"></span></div>
+          <div class="col-toolbar">
+            <input id="col-filter" type="search" placeholder="Filter columns…">
+            <button id="col-all" class="btn small" title="Select all matching">All</button>
+            <button id="col-none" class="btn small" title="Clear selection">None</button>
+            <button id="col-collapse" class="btn small icon" title="Collapse all groups">⊟</button>
+          </div>
+          <div id="col-list" class="col-list"></div>
+        </div>
+      </section>
+
+      <section class="panel" data-panel="series">
+        <label class="field">
+          <span>Title</span>
+          <input id="title" placeholder="Auto: file name">
+        </label>
+        <label class="check"><input type="checkbox" id="auto-title"> Use file name when title is empty</label>
+
+        <div class="field">
+          <span class="field-label">X axis</span>
+          <div class="row2 wide-first">
+            <input id="x-label" placeholder="Label">
+            <input id="x-unit" placeholder="Units">
+          </div>
+        </div>
+
+        <label class="field" id="shared-y-field">
+          <span>Shared Y axis label</span>
+          <input id="shared-y" placeholder="Auto">
+        </label>
+
+        <div class="field grow">
+          <div class="field-head"><span>Series</span><span class="muted">drag ⠿ to reorder</span></div>
+          <div id="series-list" class="series-list"></div>
+        </div>
+      </section>
+
+      <section class="panel" data-panel="style">
+        <label class="field"><span>Theme</span><select id="s-theme"></select></label>
+        <label class="field"><span>Colour palette</span><select id="s-palette"></select></label>
+        <div id="palette-preview" class="palette-preview"></div>
+        <div class="field">
+          <span class="field-label">Layout</span>
+          <div id="s-layout" class="seg"></div>
+        </div>
+        <label class="field"><span>Line width <output id="s-lw-out"></output></span><input type="range" id="s-lw" min="0.5" max="5" step="0.1"></label>
+        <label class="field"><span>Font size <output id="s-fs-out"></output></span><input type="range" id="s-fs" min="9" max="24" step="1"></label>
+        <label class="field"><span>Legend</span><select id="s-legend"></select></label>
+        <label class="check"><input type="checkbox" id="s-grid"> Grid lines</label>
+        <label class="check"><input type="checkbox" id="s-markers"> Show data points</label>
+
+        <div class="field">
+          <span class="field-label">Export size</span>
+          <select id="s-preset">
+            <option value="">Custom…</option>
+            <option value="1600x900">Slide 16:9 (1600×900)</option>
+            <option value="1200x700">Report (1200×700)</option>
+            <option value="1000x1000">Square (1000×1000)</option>
+            <option value="2400x1000">Wide banner (2400×1000)</option>
+            <option value="900x600">Small (900×600)</option>
+          </select>
+          <div class="row3">
+            <label>W<input id="s-w" type="number" min="200" max="8000"></label>
+            <label>H<input id="s-h" type="number" min="200" max="8000"></label>
+            <label>×<input id="s-scale" type="number" min="1" max="6" step="0.5" title="Pixel scale for PNG (2 = retina)"></label>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" data-panel="notes">
+        <div class="field">
+          <span class="field-label">Add (pick a tool, then click or drag on the plot)</span>
+          <div id="ann-add" class="tool-grid"></div>
+        </div>
+        <div class="field grow">
+          <div class="field-head"><span>Annotations</span><button id="ann-clear" class="link danger">Clear all</button></div>
+          <div id="ann-list" class="ann-list"></div>
+          <div id="ann-warnings" class="warnings"></div>
+        </div>
+      </section>
+    </aside>
+
+    <!-- ── Plot stage ───────────────────────────────────────────────────── -->
+    <section class="stage">
+      <div class="toolbar" id="toolbar">
+        <div id="tools" class="tools"></div>
+        <div id="tool-hint" class="tool-hint"></div>
+      </div>
+      <div class="plot-card">
+        <div id="plot-wrap" class="plot-wrap">
+          <div id="plot"></div>
+          <div id="empty" class="empty">
+            <div class="empty-inner">
+              <div class="empty-icon"></div>
+              <h2>Drop a CSV file here</h2>
+              <p>or</p>
+              <div class="empty-actions">
+                <button class="btn primary" data-action="open">Open CSV…</button>
+                <button class="btn" data-action="sample">Try sample data</button>
+              </div>
+              <p class="muted">Your data never leaves this browser.</p>
+            </div>
+          </div>
+          <div id="no-series" class="no-series" hidden>Tick one or more columns in the <b>Data</b> tab to plot them.</div>
+          <textarea id="inline-editor" class="inline-editor" hidden spellcheck="false"></textarea>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Inspector (selected annotation) ──────────────────────────────── -->
+    <aside id="inspector" class="inspector" hidden></aside>
+  </main>
+
+  <div id="drop-overlay" class="drop-overlay" hidden><div>Drop to load CSV</div></div>
+  <div id="context-menu" class="context-menu" hidden></div>
+  <div id="toasts" class="toasts"></div>
+
+  <div id="help" class="modal" hidden>
+    <div class="modal-card">
+      <button class="modal-close" data-close>×</button>
+      <h2>CSV Plotter – quick guide</h2>
+      <div class="help-grid">
+        <div>
+          <h3>Plotting</h3>
+          <ul>
+            <li>Open or drop a CSV, pick the X column, tick columns to plot.</li>
+            <li>Drag on the plot to zoom, double-click to reset, scroll to zoom.</li>
+            <li>Labels tab: title, axis labels/units, series colours. Drag ⠿ to reorder series (and their axes).</li>
+            <li>Style tab: themes, palettes, overlaid / shared / stacked layouts, export size.</li>
+          </ul>
+          <h3>Annotations</h3>
+          <ul>
+            <li>Pick a tool, then click or drag on the plot. Arrows and markers snap to the nearest data point (hold <kbd>Alt</kbd> to place freely). Hold <kbd>Shift</kbd> to keep the tool active.</li>
+            <li>Drag anything to move it; drag span/rectangle edges to resize; drag labels to move just the text.</li>
+            <li>Double-click a label to edit its text in place. Right-click for more options.</li>
+            <li>Text supports <code>&lt;b&gt;</code>, <code>&lt;i&gt;</code>, <code>&lt;sup&gt;</code>, <code>&lt;sub&gt;</code>.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Shortcuts</h3>
+          <table class="keys">
+            <tr><td><kbd>V</kbd></td><td>Select / move</td></tr>
+            <tr><td><kbd>T</kbd> <kbd>A</kbd> <kbd>B</kbd></td><td>Text, Arrow, Bracket</td></tr>
+            <tr><td><kbd>S</kbd> <kbd>Y</kbd></td><td>X span, Y span</td></tr>
+            <tr><td><kbd>L</kbd> <kbd>H</kbd></td><td>Vertical, Horizontal line</td></tr>
+            <tr><td><kbd>M</kbd> <kbd>R</kbd></td><td>Marker, Rectangle</td></tr>
+            <tr><td><kbd>Del</kbd></td><td>Delete selected</td></tr>
+            <tr><td><kbd>Ctrl</kbd>+<kbd>D</kbd></td><td>Duplicate selected</td></tr>
+            <tr><td><kbd>←↑→↓</kbd></td><td>Nudge selected (Shift = ×10)</td></tr>
+            <tr><td><kbd>Enter</kbd></td><td>Edit selected text</td></tr>
+            <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd></td><td>Undo / Redo</td></tr>
+            <tr><td><kbd>Esc</kbd></td><td>Cancel tool / deselect</td></tr>
+          </table>
+          <p class="muted">Work is saved automatically in this browser per file name, and restored when you open the same file again.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Plotly: use a local copy in vendor/ if present (offline), otherwise the CDN. -->
+  <script src="vendor/plotly-2.35.2.min.js"></script>
+  <script>window.Plotly || document.write('<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"><\/script>');</script>
+  <script src="js/core.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

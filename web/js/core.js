@@ -391,13 +391,14 @@
   function fmtNum(v) {
     if (v === null || v === undefined || !Number.isFinite(v)) return '—';
     const a = Math.abs(v);
-    if (a !== 0 && (a >= 1e6 || a < 1e-3)) return v.toExponential(2);
+    if (a !== 0 && (a >= 1e9 || a < 1e-3)) return v.toExponential(2);
     return Number(v.toPrecision(4)).toLocaleString('en-US', { maximumFractionDigits: 6 });
   }
 
-  function describeAnnotation(a) {
+  /** Short position summary. `fmtX` formats X values (e.g. as dates). */
+  function describeAnnotation(a, fmtX) {
     const fields = KIND_FIELDS[a.kind] || {};
-    const parts = Object.keys(fields).map((f) => `${f}=${fmtNum(a[f])}`);
+    const parts = Object.keys(fields).map((f) => `${f}=${f[0] === 'x' && fmtX ? fmtX(a[f]) : fmtNum(a[f])}`);
     if (Object.keys(fields).some((f) => f[0] === 'y')) parts.push(a.y_ref === AXES_FRACTION ? '(fraction)' : `(${a.y_ref})`);
     return parts.join(' ');
   }
@@ -501,7 +502,8 @@
       hovermode: 'x unified',
       hoverlabel: { font: { family: theme.font } },
       dragmode: 'zoom',
-      uirevision: 'keep',
+      // Keep the user's zoom across redraws, but reset it when the axes fundamentally change
+      uirevision: `${ds ? ds.fileName : ''}|${doc.xCol}|${style.layout}`,
       annotations: [], shapes: [],
     };
     if (style.legend === 'top' && title) layout.margin.t += 8;
@@ -635,7 +637,7 @@
   const LABEL_BASE = {
     [K.XSPAN]: { ax: 0, ay: 14, xanchor: 'center', yanchor: 'top' },
     [K.YSPAN]: { ax: 6, ay: 0, xanchor: 'left', yanchor: 'middle' },
-    [K.VLINE]: { ax: 5, ay: 6, xanchor: 'left', yanchor: 'top', textangle: -90 },
+    [K.VLINE]: { ax: 5, ay: 5, xanchor: 'left', yanchor: 'top' },
     [K.HLINE]: { ax: 6, ay: -4, xanchor: 'left', yanchor: 'bottom' },
     [K.BRACKET]: { ax: 0, ay: -6, xanchor: 'center', yanchor: 'bottom' },
     [K.MARKER]: { ax: 10, ay: -10, xanchor: 'left', yanchor: 'bottom' },
@@ -831,7 +833,7 @@
       case K.RECT: Object.assign(props, { x: Math.min(x1, x2), x2: Math.max(x1, x2), y: Math.min(y1, y2), y2: Math.max(y1, y2) }); break;
       default: break;
     }
-    if (kind === K.HLINE || kind === K.VLINE || kind === K.XSPAN) props.text = '';
+    if (kind === K.HLINE || kind === K.VLINE || kind === K.XSPAN || kind === K.MARKER) props.text = '';
     return newAnnotation(kind, props);
   }
 

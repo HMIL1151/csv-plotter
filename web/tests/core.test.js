@@ -130,6 +130,16 @@ test('overlay layout with many series places extra axes outward and shrinks the 
   assert.ok(fig.layout.yaxis4.position > d1);
 });
 
+test('uirevision changes with file, X column and layout so stale zoom is dropped', () => {
+  const ds = sampleDataset();
+  const a = C.buildFigure(sampleDoc(), ds).layout.uirevision;
+  const doc = sampleDoc();
+  doc.style.layout = 'stacked';
+  assert.notEqual(C.buildFigure(doc, ds).layout.uirevision, a);
+  assert.notEqual(C.buildFigure(sampleDoc({ xCol: 'temp_1' }), ds).layout.uirevision, a);
+  assert.equal(C.buildFigure(sampleDoc({ title: 'x' }), ds).layout.uirevision, a);
+});
+
 test('stacked layout uses one panel per series with matched X axes', () => {
   const doc = sampleDoc();
   doc.style.layout = 'stacked';

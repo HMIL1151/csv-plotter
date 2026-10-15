@@ -1,2 +1,4 @@
 __pycache__/
 *.pyc
+web/vendor/*.js
+web/node_modules/
