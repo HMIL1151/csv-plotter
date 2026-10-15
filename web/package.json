@@ -1,0 +1,8 @@
+{
+  "name": "csv-plotter-web",
+  "private": true,
+  "description": "Browser-based CSV plotter. No build step: open index.html.",
+  "scripts": {
+    "test": "node --test"
+  }
+}
