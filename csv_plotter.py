@@ -13,6 +13,7 @@ Usage:
 import re
 import sys
 from collections import OrderedDict
+from dataclasses import replace
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -21,6 +22,9 @@ import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
+
+import annotations as an
+from annotation_dialog import AnnotationDialog
 
 # ── Colour cycle ──────────────────────────────────────────────────────────────
 COLORS = [
@@ -73,6 +77,12 @@ class CsvPlotter:
         # Per-column label and unit overrides – persist across refreshes
         self._label_vars: dict[str, tk.StringVar] = {}
         self._unit_vars:  dict[str, tk.StringVar] = {}
+
+        # Plot annotations – persist across refreshes and file loads
+        self._annotations: list[an.Annotation] = []
+        self._host_ax = None                 # primary axes of the current plot
+        self._axes_by_col: dict = {}         # column -> axes of the current plot
+        self._pick_request = None            # (y_ref, callback) awaiting a plot click
 
         # ── Control window (root) ─────────────────────────────────────────────
         self.ctrl = tk.Tk()
@@ -280,6 +290,9 @@ class CsvPlotter:
         )
         self._ov_canvas.bind("<Leave>", lambda e: self._ov_canvas.unbind_all("<MouseWheel>"))
 
+        # ── Tab 3: Annotations ────────────────────────────────────────────────
+        self._build_annotations_tab(nb)
+
     def _on_mwheel_cb(self, event):
         self.cb_canvas.yview_scroll(-1 * (event.delta // 120), "units")
 
@@ -298,10 +311,11 @@ class CsvPlotter:
         )
 
         self.canvas_fig = FigureCanvasTkAgg(self.fig, master=self.plot_win)
-        toolbar = NavigationToolbar2Tk(self.canvas_fig, self.plot_win, pack_toolbar=False)
-        toolbar.update()
-        toolbar.pack(side="bottom", fill="x")
+        self._toolbar = NavigationToolbar2Tk(self.canvas_fig, self.plot_win, pack_toolbar=False)
+        self._toolbar.update()
+        self._toolbar.pack(side="bottom", fill="x")
         self.canvas_fig.get_tk_widget().pack(fill="both", expand=True)
+        self.canvas_fig.mpl_connect("button_press_event", self._on_plot_click)
         self.canvas_fig.draw()
 
     # ── File loading ──────────────────────────────────────────────────────────
@@ -655,6 +669,267 @@ class CsvPlotter:
         except Exception as exc:
             messagebox.showerror("Export Error", str(exc))
 
+    # ── Annotations ───────────────────────────────────────────────────────────
+
+    def _build_annotations_tab(self, nb):
+        tab = ttk.Frame(nb, padding=6)
+        nb.add(tab, text="Annotations")
+
+        bar = ttk.Frame(tab)
+        bar.pack(fill="x")
+        add_btn = ttk.Menubutton(bar, text="+ Add ▾")
+        add_menu = tk.Menu(add_btn, tearoff=False)
+        for kind in an.KINDS:
+            add_menu.add_command(label=kind, command=lambda k=kind: self._add_annotation(k))
+        add_btn["menu"] = add_menu
+        add_btn.pack(side="left", padx=(0, 2))
+        for text, cmd in [("Edit", self._edit_annotation),
+                          ("Duplicate", self._duplicate_annotation),
+                          ("Delete", self._delete_annotation),
+                          ("Show/Hide", self._toggle_annotation)]:
+            ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=1)
+
+        cols = ("show", "kind", "text", "pos")
+        tree_frm = ttk.Frame(tab)
+        tree_frm.pack(fill="both", expand=True, pady=4)
+        self._annot_tree = ttk.Treeview(tree_frm, columns=cols, show="headings",
+                                        selectmode="browse", height=10)
+        for col, heading, width, stretch in [
+            ("show", "Show", 40, False), ("kind", "Type", 100, False),
+            ("text", "Text", 110, True), ("pos", "Position", 160, True),
+        ]:
+            self._annot_tree.heading(col, text=heading)
+            self._annot_tree.column(col, width=width, stretch=stretch, anchor="w")
+        tsb = ttk.Scrollbar(tree_frm, orient="vertical", command=self._annot_tree.yview)
+        self._annot_tree.configure(yscrollcommand=tsb.set)
+        tsb.pack(side="right", fill="y")
+        self._annot_tree.pack(side="left", fill="both", expand=True)
+        self._annot_tree.bind("<Double-1>", lambda e: self._edit_annotation())
+        self._annot_tree.bind("<Delete>", lambda e: self._delete_annotation())
+
+        bar2 = ttk.Frame(tab)
+        bar2.pack(fill="x")
+        for text, cmd in [("↑", lambda: self._move_annotation(-1)),
+                          ("↓", lambda: self._move_annotation(1))]:
+            ttk.Button(bar2, text=text, width=3, command=cmd).pack(side="left", padx=1)
+        ttk.Button(bar2, text="Clear All", command=self._clear_annotations).pack(side="left", padx=1)
+        ttk.Button(bar2, text="Load…", command=self._load_annotations).pack(side="right", padx=1)
+        ttk.Button(bar2, text="Save…", command=self._save_annotations).pack(side="right", padx=1)
+
+        ttk.Label(
+            tab, foreground="gray", font=("", 8), wraplength=400, justify="left",
+            text="Tip: right-click the plot to add an annotation at that point. "
+                 "Use ‘Pick point’ in the editor to place points by clicking the plot. "
+                 "Y values can be axes fraction (0–1) or a plotted column's units.",
+        ).pack(anchor="w", pady=(6, 0))
+        self._annot_status = ttk.Label(tab, text="", foreground="#b35900",
+                                       font=("", 8), wraplength=400, justify="left")
+        self._annot_status.pack(anchor="w")
+
+    def _refresh_annot_list(self, select: int | None = None):
+        tree = self._annot_tree
+        tree.delete(*tree.get_children())
+        for i, a in enumerate(self._annotations):
+            text = a.text.replace("\n", " ")
+            tree.insert("", "end", iid=str(i), values=(
+                "✓" if a.visible else "", a.kind, text, a.describe(),
+            ))
+        if select is not None and 0 <= select < len(self._annotations):
+            tree.selection_set(str(select))
+            tree.see(str(select))
+
+    def _selected_annotation(self) -> int | None:
+        sel = self._annot_tree.selection()
+        return int(sel[0]) if sel else None
+
+    def _annotations_changed(self, select: int | None = None):
+        self._refresh_annot_list(select)
+        self._refresh_plot()
+
+    def _y_ref_choices(self) -> list[str]:
+        return [an.AXES_FRACTION] + list(self._axes_by_col)
+
+    def _default_annotation(self, kind: str, px=None, py=None) -> an.Annotation:
+        """
+        New annotation of `kind`, placed at display pixel (px, py) if given,
+        otherwise near the middle of the current view.
+        """
+        data_anchored = {an.ARROW, an.MARKER, an.HLINE, an.YSPAN, an.RECT, an.BRACKET}
+        y_ref = an.AXES_FRACTION
+        if kind in data_anchored and self._axes_by_col:
+            y_ref = next(iter(self._axes_by_col))   # follow the data when ranges change
+        ann = an.Annotation(kind=kind, y_ref=y_ref,
+                            text="" if kind in (an.XSPAN, an.VLINE, an.HLINE) else "Label")
+        if kind == an.BRACKET:
+            ann.arrowstyle = "<->"
+
+        host = self._host_ax
+        if host is None:
+            # Nothing plotted: fall back to the slider range and axes fraction
+            t0 = min(self.start_var.get(), self.end_var.get())
+            t1 = max(self.start_var.get(), self.end_var.get())
+            ann.y_ref = an.AXES_FRACTION
+            ann.x,  ann.y  = t0 + 0.4 * (t1 - t0), 0.5
+            ann.x2, ann.y2 = t0 + 0.6 * (t1 - t0), 0.75
+            return ann
+
+        # Work in axes-fraction space, then convert to the annotation's units
+        if px is None:
+            fx, fy = 0.4, 0.5
+        else:
+            fx, fy = host.transAxes.inverted().transform((px, py))
+        fx2 = fx + 0.15 if fx < 0.8 else fx - 0.15
+        fy2 = fy + 0.2 if fy < 0.75 else fy - 0.2
+        if kind == an.BRACKET:
+            fy2 = fy
+
+        def to_coords(f_x, f_y):
+            dx, dy = host.transAxes.transform((f_x, f_y))
+            return an.display_to_coords(dx, dy, ann.y_ref, host, self._axes_by_col)
+
+        ann.x, ann.y = to_coords(fx, fy)
+        ann.x2, ann.y2 = to_coords(fx2, fy2)
+        return ann
+
+    def _open_annotation_dialog(self, ann: an.Annotation, index: int | None):
+        state = {"index": index}
+
+        def on_apply(new_ann: an.Annotation):
+            if state["index"] is None:
+                self._annotations.append(new_ann)
+                state["index"] = len(self._annotations) - 1
+            elif state["index"] < len(self._annotations):
+                self._annotations[state["index"]] = new_ann
+            self._annotations_changed(select=state["index"])
+
+        def convert_y(y, from_ref, to_ref):
+            if self._host_ax is None:
+                raise LookupError("no plot")
+            return an.convert_y(y, from_ref, to_ref, self._host_ax, self._axes_by_col)
+
+        AnnotationDialog(
+            self.ctrl, ann, self._y_ref_choices(), on_apply,
+            self._request_pick, convert_y,
+            title="Add Annotation" if index is None else f"Edit Annotation #{index + 1}",
+        )
+
+    def _add_annotation(self, kind: str, px=None, py=None):
+        self._open_annotation_dialog(self._default_annotation(kind, px, py), None)
+
+    def _edit_annotation(self):
+        i = self._selected_annotation()
+        if i is not None:
+            self._open_annotation_dialog(self._annotations[i], i)
+
+    def _duplicate_annotation(self):
+        i = self._selected_annotation()
+        if i is None:
+            return
+        self._annotations.insert(i + 1, replace(self._annotations[i]))
+        self._annotations_changed(select=i + 1)
+
+    def _delete_annotation(self):
+        i = self._selected_annotation()
+        if i is None:
+            return
+        del self._annotations[i]
+        self._annotations_changed(select=min(i, len(self._annotations) - 1))
+
+    def _toggle_annotation(self):
+        i = self._selected_annotation()
+        if i is None:
+            return
+        self._annotations[i].visible = not self._annotations[i].visible
+        self._annotations_changed(select=i)
+
+    def _move_annotation(self, delta: int):
+        i = self._selected_annotation()
+        if i is None:
+            return
+        j = i + delta
+        if 0 <= j < len(self._annotations):
+            a = self._annotations
+            a[i], a[j] = a[j], a[i]
+            self._annotations_changed(select=j)
+
+    def _clear_annotations(self):
+        if self._annotations and messagebox.askyesno(
+            "Clear annotations", f"Remove all {len(self._annotations)} annotations?",
+        ):
+            self._annotations.clear()
+            self._annotations_changed()
+
+    def _save_annotations(self):
+        if not self._annotations:
+            messagebox.showinfo("Save annotations", "There are no annotations to save.")
+            return
+        base = self._csv_filename.rsplit(".", 1)[0] if self._csv_filename else "plot"
+        path = filedialog.asksaveasfilename(
+            title="Save Annotations", defaultextension=".json",
+            filetypes=[("Annotation files", "*.json"), ("All files", "*.*")],
+            initialfile=f"{base}_annotations.json",
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(an.dumps(self._annotations))
+        except OSError as exc:
+            messagebox.showerror("Save annotations", str(exc))
+
+    def _load_annotations(self):
+        path = filedialog.askopenfilename(
+            title="Load Annotations",
+            filetypes=[("Annotation files", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as fh:
+                loaded = an.loads(fh.read())
+        except Exception as exc:
+            messagebox.showerror("Load annotations", f"Could not read annotations:\n{exc}")
+            return
+        if self._annotations and messagebox.askyesno(
+            "Load annotations", "Replace the current annotations?\n"
+                                "(No = append to the existing list)",
+        ):
+            self._annotations.clear()
+        self._annotations.extend(loaded)
+        self._annotations_changed()
+
+    def _request_pick(self, y_ref: str, callback) -> bool:
+        if self._host_ax is None:
+            return False
+        self._pick_request = (y_ref, callback)
+        self.plot_win.lift()
+        return True
+
+    def _on_plot_click(self, event):
+        if self._host_ax is None or self._toolbar.mode != "" or event.inaxes is None:
+            return
+        if event.button == 1 and self._pick_request:
+            y_ref, callback = self._pick_request
+            self._pick_request = None
+            try:
+                x, y = an.display_to_coords(event.x, event.y, y_ref,
+                                            self._host_ax, self._axes_by_col)
+            except an.AxisNotPlotted:
+                messagebox.showwarning("Pick point", f"Y axis '{y_ref}' is not plotted.")
+                return
+            callback(x, y)
+        elif event.button == 3:
+            menu = tk.Menu(self.plot_win, tearoff=False)
+            for kind in an.KINDS:
+                menu.add_command(
+                    label=f"Add {kind} here",
+                    command=lambda k=kind, px=event.x, py=event.y: self._add_annotation(k, px, py),
+                )
+            menu.tk_popup(self.plot_win.winfo_pointerx(), self.plot_win.winfo_pointery())
+
+    def _set_annot_status(self, warnings: list[str]):
+        self._annot_status.config(text="\n".join(warnings))
+
     # ── Plot ──────────────────────────────────────────────────────────────────
 
     def _refresh_plot(self):
@@ -676,6 +951,8 @@ class CsvPlotter:
         x       = pd.to_numeric(df_view[x_col], errors="coerce").values
 
         self.fig.clear()
+        self._host_ax = None
+        self._axes_by_col = {}
 
         # Title: custom if provided, otherwise auto-generated
         custom = self._custom_title_var.get().strip()
@@ -698,6 +975,10 @@ class CsvPlotter:
             )
             ax.text(0.5, 0.5, msg, ha="center", va="center",
                     transform=ax.transAxes, fontsize=13, color="#aaa")
+            self._set_annot_status(
+                ["Annotations are hidden until something is plotted."]
+                if any(a.visible for a in self._annotations) else []
+            )
             self.canvas_fig.draw()
             self._rebuild_overrides_panel(active)
             return
@@ -755,6 +1036,13 @@ class CsvPlotter:
             lines, [l.get_label() for l in lines],
             loc="upper left", fontsize=7, framealpha=0.75, ncol=ncol,
         )
+
+        # Annotations go on the top-most axes so they render above every line
+        self._host_ax = ax0
+        self._axes_by_col = dict(zip(active, axes))
+        self._set_annot_status(an.render_annotations(
+            self._annotations, ax0, self._axes_by_col, draw_ax=axes[-1],
+        ))
 
         self.canvas_fig.draw()
         self._rebuild_overrides_panel(active)
