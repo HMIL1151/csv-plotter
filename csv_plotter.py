@@ -13,7 +13,7 @@ Usage:
 import re
 import sys
 from collections import OrderedDict
-from dataclasses import replace
+from dataclasses import fields, replace
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -22,6 +22,7 @@ import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
+from matplotlib.backend_tools import Cursors
 
 import annotations as an
 from annotation_dialog import AnnotationDialog
@@ -58,6 +59,12 @@ def _parse_groups(cols: list) -> OrderedDict:
     return result
 
 
+def _assign(target, source) -> None:
+    """Copy every dataclass field from source onto target (keeps target's identity)."""
+    for f in fields(target):
+        setattr(target, f.name, getattr(source, f.name))
+
+
 class CsvPlotter:
     def __init__(self, initial_path: str | None = None):
         self.df: pd.DataFrame | None = None
@@ -83,6 +90,10 @@ class CsvPlotter:
         self._host_ax = None                 # primary axes of the current plot
         self._axes_by_col: dict = {}         # column -> axes of the current plot
         self._pick_request = None            # (y_ref, callback) awaiting a plot click
+        self._label_artists: dict = {}       # annotation index -> text artist on the plot
+        self._drag = None                    # in-progress label drag state
+        self._hover_label = False            # cursor currently over a draggable label
+        self._annot_dialogs: list = []       # (state, dialog) for open editors
 
         # ── Control window (root) ─────────────────────────────────────────────
         self.ctrl = tk.Tk()
@@ -316,6 +327,8 @@ class CsvPlotter:
         self._toolbar.pack(side="bottom", fill="x")
         self.canvas_fig.get_tk_widget().pack(fill="both", expand=True)
         self.canvas_fig.mpl_connect("button_press_event", self._on_plot_click)
+        self.canvas_fig.mpl_connect("motion_notify_event", self._on_plot_motion)
+        self.canvas_fig.mpl_connect("button_release_event", self._on_plot_release)
         self.canvas_fig.draw()
 
     # ── File loading ──────────────────────────────────────────────────────────
@@ -792,26 +805,35 @@ class CsvPlotter:
         return ann
 
     def _open_annotation_dialog(self, ann: an.Annotation, index: int | None):
-        state = {"index": index}
+        # Track the edited annotation by identity (not list index) so reordering,
+        # deleting, or dragging while the editor is open can't hit the wrong one.
+        state = {"obj": self._annotations[index] if index is not None else None}
 
         def on_apply(new_ann: an.Annotation):
-            if state["index"] is None:
+            i = self._index_of(state["obj"])
+            if i is None:
                 self._annotations.append(new_ann)
-                state["index"] = len(self._annotations) - 1
-            elif state["index"] < len(self._annotations):
-                self._annotations[state["index"]] = new_ann
-            self._annotations_changed(select=state["index"])
+                state["obj"] = new_ann
+                i = len(self._annotations) - 1
+            else:
+                _assign(state["obj"], new_ann)
+            self._annotations_changed(select=i)
 
         def convert_y(y, from_ref, to_ref):
             if self._host_ax is None:
                 raise LookupError("no plot")
             return an.convert_y(y, from_ref, to_ref, self._host_ax, self._axes_by_col)
 
-        AnnotationDialog(
+        dlg = AnnotationDialog(
             self.ctrl, ann, self._y_ref_choices(), on_apply,
             self._request_pick, convert_y,
             title="Add Annotation" if index is None else f"Edit Annotation #{index + 1}",
         )
+        self._annot_dialogs = [(s, d) for s, d in self._annot_dialogs if d.winfo_exists()]
+        self._annot_dialogs.append((state, dlg))
+
+    def _index_of(self, obj) -> int | None:
+        return next((i for i, a in enumerate(self._annotations) if a is obj), None)
 
     def _add_annotation(self, kind: str, px=None, py=None):
         self._open_annotation_dialog(self._default_annotation(kind, px, py), None)
@@ -906,7 +928,12 @@ class CsvPlotter:
         return True
 
     def _on_plot_click(self, event):
-        if self._host_ax is None or self._toolbar.mode != "" or event.inaxes is None:
+        if self._host_ax is None or self._toolbar.mode != "":
+            return
+        if event.button == 1 and not self._pick_request:
+            self._start_label_drag(event)
+            return
+        if event.inaxes is None:
             return
         if event.button == 1 and self._pick_request:
             y_ref, callback = self._pick_request
@@ -926,6 +953,65 @@ class CsvPlotter:
                     command=lambda k=kind, px=event.x, py=event.y: self._add_annotation(k, px, py),
                 )
             menu.tk_popup(self.plot_win.winfo_pointerx(), self.plot_win.winfo_pointery())
+
+    # ── Dragging annotation labels ──────────────────────────────────────────────────────
+
+    def _label_at(self, event) -> int | None:
+        """Index of the top-most annotation label under the mouse, if any."""
+        for i in sorted(self._label_artists, reverse=True):
+            artist = self._label_artists[i]
+            if artist.get_visible() and artist.contains(event)[0]:
+                return i
+        return None
+
+    def _start_label_drag(self, event):
+        i = self._label_at(event)
+        if i is None:
+            return
+        artist = self._label_artists[i]
+        self._drag = {
+            "index": i, "artist": artist, "x0": event.x, "y0": event.y,
+            "orig": replace(self._annotations[i]), "xyann0": artist.xyann, "new": None,
+        }
+        self._refresh_annot_list(select=i)
+
+    def _on_plot_motion(self, event):
+        if self._drag is None:
+            self._update_hover_cursor(event)
+            return
+        d = self._drag
+        orig = d["orig"]
+        new = an.move_label(orig, event.x - d["x0"], event.y - d["y0"],
+                            self._host_ax, self._axes_by_col, self.fig.dpi)
+        d["new"] = new
+        # Live preview by moving the existing artist (no full re-plot)
+        artist = d["artist"]
+        if orig.kind == an.TEXT:
+            artist.xy = (new.x, new.y)
+        elif orig.kind == an.ARROW:
+            artist.xyann = (new.x2, new.y2)
+        else:
+            x0, y0 = d["xyann0"]
+            artist.xyann = (x0 + new.text_dx - orig.text_dx, y0 + new.text_dy - orig.text_dy)
+        self.canvas_fig.draw_idle()
+
+    def _on_plot_release(self, event):
+        d, self._drag = self._drag, None
+        if d is None or d["new"] is None:
+            return
+        target = self._annotations[d["index"]]
+        _assign(target, d["new"])
+        for state, dlg in self._annot_dialogs:
+            if state["obj"] is target and dlg.winfo_exists():
+                dlg.sync_position(target)
+        self._annotations_changed(select=d["index"])
+
+    def _update_hover_cursor(self, event):
+        over = (self._host_ax is not None and self._toolbar.mode == ""
+                and not self._pick_request and self._label_at(event) is not None)
+        if over != self._hover_label:
+            self._hover_label = over
+            self.canvas_fig.set_cursor(Cursors.MOVE if over else Cursors.POINTER)
 
     def _set_annot_status(self, warnings: list[str]):
         self._annot_status.config(text="\n".join(warnings))
@@ -953,6 +1039,8 @@ class CsvPlotter:
         self.fig.clear()
         self._host_ax = None
         self._axes_by_col = {}
+        self._label_artists = {}
+        self._drag = None
 
         # Title: custom if provided, otherwise auto-generated
         custom = self._custom_title_var.get().strip()
@@ -1042,6 +1130,7 @@ class CsvPlotter:
         self._axes_by_col = dict(zip(active, axes))
         self._set_annot_status(an.render_annotations(
             self._annotations, ax0, self._axes_by_col, draw_ax=axes[-1],
+            label_artists=self._label_artists,
         ))
 
         self.canvas_fig.draw()

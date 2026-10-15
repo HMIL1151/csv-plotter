@@ -105,6 +105,24 @@ class AnnotationDialog(tk.Toplevel):
         self.pick_status = ttk.Label(pos, text="", foreground="gray", font=("", 8))
         self.pick_status.grid(row=4, column=0, columnspan=4, sticky="w")
 
+        # Label nudge (kinds whose label hangs off an anchor point)
+        self.nudge_frm = ttk.Frame(pos)
+        self.nudge_frm.grid(row=5, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        ttk.Label(self.nudge_frm, text="Label offset (pt):  →").pack(side="left")
+        self.text_dx_var = tk.StringVar()
+        ttk.Entry(self.nudge_frm, textvariable=self.text_dx_var, width=6).pack(side="left")
+        ttk.Label(self.nudge_frm, text=" ↑").pack(side="left")
+        self.text_dy_var = tk.StringVar()
+        ttk.Entry(self.nudge_frm, textvariable=self.text_dy_var, width=6).pack(side="left")
+        ttk.Button(self.nudge_frm, text="Reset", width=6, command=lambda: (
+            self.text_dx_var.set("0"), self.text_dy_var.set("0"))).pack(side="left", padx=4)
+        self.leader_var = tk.BooleanVar()
+        ttk.Checkbutton(self.nudge_frm, text="Leader line",
+                        variable=self.leader_var).pack(side="left")
+        ttk.Label(pos, foreground="gray", font=("", 8),
+                  text="Tip: drag any label on the plot to move it.").grid(
+            row=6, column=0, columnspan=4, sticky="w")
+
         # ── Style ─────────────────────────────────────────────────────────────
         sty = ttk.LabelFrame(frm, text="Style", padding=6)
         sty.grid(row=3, column=0, columnspan=2, sticky="ew", pady=2)
@@ -194,6 +212,9 @@ class AnnotationDialog(tk.Toplevel):
         self.connection_var.set(_invert(an.CONNECTIONS).get(a.connection, "straight"))
         self.alpha_var.set(a.alpha)
         self.marker_var.set(_invert(an.MARKERS).get(a.marker, "circle"))
+        self.text_dx_var.set(f"{a.text_dx:g}")
+        self.text_dy_var.set(f"{a.text_dy:g}")
+        self.leader_var.set(a.leader)
         self.visible_var.set(a.visible)
 
     def _collect(self) -> an.Annotation | None:
@@ -205,6 +226,8 @@ class AnnotationDialog(tk.Toplevel):
                 coords[name] = float(s) if s else None
             fontsize  = float(self.fontsize_var.get())
             linewidth = float(self.linewidth_var.get())
+            text_dx   = float(self.text_dx_var.get() or 0)
+            text_dy   = float(self.text_dy_var.get() or 0)
         except ValueError as exc:
             messagebox.showerror("Annotation", f"Invalid number: {exc}", parent=self)
             return None
@@ -222,6 +245,9 @@ class AnnotationDialog(tk.Toplevel):
             arrowstyle=self.arrowstyle_var.get(),
             connection=an.CONNECTIONS.get(self.connection_var.get(), "arc3"),
             marker=an.MARKERS.get(self.marker_var.get(), "o"),
+            text_dx=text_dx,
+            text_dy=text_dy,
+            leader=self.leader_var.get(),
             visible=self.visible_var.get(),
             **coords,
         )
@@ -254,6 +280,10 @@ class AnnotationDialog(tk.Toplevel):
             w.config(state="readonly" if uses_y else "disabled")
 
         has_p2 = "x2" in used or "y2" in used
+        if kind in an.TEXT_AT_COORD:
+            self.nudge_frm.grid_remove()
+        else:
+            self.nudge_frm.grid()
         if has_p2:
             self.pick2_btn.pack(side="left", padx=4)
         else:
@@ -314,6 +344,19 @@ class AnnotationDialog(tk.Toplevel):
             self.swatch.config(bg=self.color_var.get())
         except tk.TclError:
             pass
+
+    def sync_position(self, a: an.Annotation):
+        """Update position/offset fields after the annotation was dragged on the plot."""
+        for name in ("x", "y", "x2", "y2"):
+            v = getattr(a, name)
+            if v is not None and name.startswith("y") and self.y_ref_var.get() != a.y_ref:
+                try:
+                    v = self._convert_y(v, a.y_ref, self.y_ref_var.get())
+                except Exception:
+                    pass
+            self.coord_vars[name].set("" if v is None else f"{v:.6g}")
+        self.text_dx_var.set(f"{a.text_dx:g}")
+        self.text_dy_var.set(f"{a.text_dy:g}")
 
     def _apply(self) -> bool:
         a = self._collect()

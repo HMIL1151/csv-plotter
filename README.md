@@ -72,6 +72,7 @@ python csv_plotter.py path/to/data.csv
 
 - **Adding** – use **+ Add ▾** in the Annotations tab, or right-click anywhere on the plot to add one at that spot. (Right-click is ignored while the toolbar's pan/zoom mode is active.)
 - **Editing** – double-click a row (or select it and click **Edit**). In the editor, **Pick point 1 / 2** lets you set positions by clicking the plot. **Apply** previews the change; **OK** applies it and closes the editor.
+- **Moving labels** – drag any annotation's text on the plot (the cursor changes to a move cursor over it). Text boxes and arrow text move their actual position, so the arrow tip stays where it is. Labels on spans, lines, markers, brackets and rectangles get an offset from their anchor instead, and a thin leader line links them back. You can also type the offset in points in the editor (**Reset** sets it back to 0), or untick **Leader line** to hide the line.
 - **Coordinates** – X is always in X-column units. Y is in either *axes fraction* (0 = bottom, 1 = top, so it stays at that height on screen) or the units of a plotted column (so it stays with the data when the range changes). If you change the Y axis in the editor, existing Y values are converted for you. An annotation tied to a column that isn't plotted is hidden, and the tab shows a warning.
 - **Managing** – Duplicate, Delete, Show/Hide, reorder (↑/↓), Clear All, and **Save… / Load…** to a `.json` file.
 
