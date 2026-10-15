@@ -17,7 +17,8 @@ Coordinates
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, fields
+import math
+from dataclasses import asdict, dataclass, fields, replace
 
 from matplotlib.colors import to_rgba
 from matplotlib.lines import Line2D
@@ -73,6 +74,12 @@ CONNECTIONS = {"straight": "arc3", "curved": "arc3,rad=0.25",
 MARKERS     = {"circle": "o", "square": "s", "diamond": "D", "triangle": "^",
                "star": "*", "plus": "P", "cross": "X"}
 
+# Kinds whose text sits at a real coordinate (moving the text moves that point).
+# Every other kind places its label at an anchor plus a (text_dx, text_dy) nudge.
+TEXT_AT_COORD = {TEXT: ("x", "y"), ARROW: ("x2", "y2")}
+
+LEADER_MIN_PT = 3.0   # nudges smaller than this don't get a leader line
+
 ZORDER = 10
 
 
@@ -94,6 +101,9 @@ class Annotation:
     arrowstyle: str = "->"
     connection: str = "arc3"
     marker: str = "o"
+    text_dx: float = 0.0            # label nudge in points (not used by Text box / Arrow,
+    text_dy: float = 0.0            # whose text position is a real coordinate)
+    leader: bool = True             # draw a leader line from a nudged label to its anchor
     visible: bool = True
 
     # ── Helpers ───────────────────────────────────────────────────────────────
@@ -198,17 +208,23 @@ def _bbox(ann: Annotation):
 
 
 def _label(draw_ax, ann, xy, transform, offset=(0, 0), **kw):
+    """Label anchored at `xy`, displaced by the kind's default offset plus the user nudge."""
     if not ann.text:
-        return
-    draw_ax.annotate(
+        return None
+    nudge = (ann.text_dx, ann.text_dy)
+    arrowprops = None
+    if ann.leader and math.hypot(*nudge) >= LEADER_MIN_PT:
+        arrowprops = dict(arrowstyle="-", color=ann.color, lw=0.8,
+                          shrinkA=0, shrinkB=2, alpha=0.8)
+    return draw_ax.annotate(
         ann.text, xy=xy, xycoords=transform,
-        xytext=offset, textcoords="offset points",
-        fontsize=ann.fontsize, color=ann.color, bbox=_bbox(ann),
+        xytext=(offset[0] + nudge[0], offset[1] + nudge[1]), textcoords="offset points",
+        fontsize=ann.fontsize, color=ann.color, bbox=_bbox(ann), arrowprops=arrowprops,
         annotation_clip=True, zorder=ZORDER + 1, **kw,
     )
 
 
-def render_annotation(ann: Annotation, host_ax, axes_by_col, draw_ax=None) -> None:
+def render_annotation(ann: Annotation, host_ax, axes_by_col, draw_ax=None):
     """
     Draw a single annotation.
 
@@ -216,6 +232,9 @@ def render_annotation(ann: Annotation, host_ax, axes_by_col, draw_ax=None) -> No
     axes_by_col – {column name: axes} for every plotted Y column
     draw_ax     – axes the artists are attached to (default host_ax).  Use the
                   top-most twin so annotations render above all data lines.
+
+    Returns the matplotlib text artist for the annotation's label (None if it
+    has no text), so callers can hit-test it for dragging.
 
     Raises AxisNotPlotted if ann.y_ref refers to a column that is not plotted,
     ValueError if the annotation is invalid.
@@ -230,7 +249,7 @@ def render_annotation(ann: Annotation, host_ax, axes_by_col, draw_ax=None) -> No
 
     if k == TEXT:
         t = point_transform(ann.y_ref, host_ax, axes_by_col)
-        draw_ax.annotate(
+        return draw_ax.annotate(
             ann.text or " ", xy=(ann.x, ann.y), xycoords=t, ha="center", va="center",
             fontsize=ann.fontsize, color=ann.color, bbox=_bbox(ann),
             annotation_clip=True, zorder=ZORDER + 1,
@@ -238,7 +257,7 @@ def render_annotation(ann: Annotation, host_ax, axes_by_col, draw_ax=None) -> No
 
     elif k == ARROW:
         t = point_transform(ann.y_ref, host_ax, axes_by_col)
-        draw_ax.annotate(
+        return draw_ax.annotate(
             ann.text, xy=(ann.x, ann.y), xycoords=t,
             xytext=(ann.x2, ann.y2), textcoords=t, ha="center", va="center",
             fontsize=ann.fontsize, color=ann.color, bbox=_bbox(ann),
@@ -254,7 +273,7 @@ def render_annotation(ann: Annotation, host_ax, axes_by_col, draw_ax=None) -> No
             arrowprops=dict(arrowstyle=ann.arrowstyle, shrinkA=0, shrinkB=0, **line_kw),
             annotation_clip=False, zorder=ZORDER,
         )
-        _label(draw_ax, ann, ((ann.x + ann.x2) / 2, ann.y), t, offset=(0, 4),
+        return _label(draw_ax, ann, ((ann.x + ann.x2) / 2, ann.y), t, offset=(0, 4),
                ha="center", va="bottom")
 
     elif k == XSPAN:
@@ -264,7 +283,7 @@ def render_annotation(ann: Annotation, host_ax, axes_by_col, draw_ax=None) -> No
             facecolor=ann.color, edgecolor=ann.color, alpha=ann.alpha,
             linewidth=0, zorder=ZORDER - 5,
         ))
-        _label(draw_ax, ann, ((ann.x + ann.x2) / 2, 1), t, offset=(0, -4),
+        return _label(draw_ax, ann, ((ann.x + ann.x2) / 2, 1), t, offset=(0, -4),
                ha="center", va="top")
 
     elif k == YSPAN:
@@ -275,20 +294,20 @@ def render_annotation(ann: Annotation, host_ax, axes_by_col, draw_ax=None) -> No
             facecolor=ann.color, edgecolor=ann.color, alpha=ann.alpha,
             linewidth=0, zorder=ZORDER - 5,
         ))
-        _label(draw_ax, ann, (0, (ann.y + ann.y2) / 2), t, offset=(4, 0),
+        return _label(draw_ax, ann, (0, (ann.y + ann.y2) / 2), t, offset=(4, 0),
                ha="left", va="center")
 
     elif k == VLINE:
         t = blended_transform_factory(host_ax.transData, host_ax.transAxes)
         draw_ax.add_artist(Line2D([ann.x, ann.x], [0, 1], transform=t, zorder=ZORDER, **line_kw))
-        _label(draw_ax, ann, (ann.x, 1), t, offset=(3, -4),
+        return _label(draw_ax, ann, (ann.x, 1), t, offset=(3, -4),
                ha="left", va="top", rotation=90)
 
     elif k == HLINE:
         t = blended_transform_factory(host_ax.transAxes,
                                       _y_axes_transform(ann.y_ref, host_ax, axes_by_col))
         draw_ax.add_artist(Line2D([0, 1], [ann.y, ann.y], transform=t, zorder=ZORDER, **line_kw))
-        _label(draw_ax, ann, (0, ann.y), t, offset=(4, 3), ha="left", va="bottom")
+        return _label(draw_ax, ann, (0, ann.y), t, offset=(4, 3), ha="left", va="bottom")
 
     elif k == MARKER:
         t = point_transform(ann.y_ref, host_ax, axes_by_col)
@@ -297,7 +316,7 @@ def render_annotation(ann: Annotation, host_ax, axes_by_col, draw_ax=None) -> No
             color=ann.color, markeredgecolor="black", markeredgewidth=0.6,
             linestyle="none", zorder=ZORDER,
         ))
-        _label(draw_ax, ann, (ann.x, ann.y), t, offset=(7, 7), ha="left", va="bottom")
+        return _label(draw_ax, ann, (ann.x, ann.y), t, offset=(7, 7), ha="left", va="bottom")
 
     elif k == RECT:
         t = point_transform(ann.y_ref, host_ax, axes_by_col)
@@ -306,23 +325,54 @@ def render_annotation(ann: Annotation, host_ax, axes_by_col, draw_ax=None) -> No
             facecolor=to_rgba(ann.color, ann.alpha), edgecolor=ann.color,
             linestyle=ann.linestyle, linewidth=ann.linewidth, zorder=ZORDER - 5,
         ))
-        _label(draw_ax, ann, (min(ann.x, ann.x2), max(ann.y, ann.y2)), t,
+        return _label(draw_ax, ann, (min(ann.x, ann.x2), max(ann.y, ann.y2)), t,
                offset=(3, -3), ha="left", va="top")
 
 
-def render_annotations(annotations, host_ax, axes_by_col, draw_ax=None) -> list[str]:
+def render_annotations(annotations, host_ax, axes_by_col, draw_ax=None,
+                       label_artists: dict | None = None) -> list[str]:
     """
     Draw every visible annotation.  Problems are collected, not raised, so one
     bad annotation never breaks the plot.  Returns a list of warning strings.
+
+    If `label_artists` is given it is filled with {list index: text artist}.
     """
     warnings = []
     for i, ann in enumerate(annotations, start=1):
         if not ann.visible:
             continue
         try:
-            render_annotation(ann, host_ax, axes_by_col, draw_ax)
+            artist = render_annotation(ann, host_ax, axes_by_col, draw_ax)
+            if artist is not None and label_artists is not None:
+                label_artists[i - 1] = artist
         except AxisNotPlotted as exc:
             warnings.append(f"#{i} hidden: Y axis '{exc.args[0]}' is not plotted")
         except Exception as exc:  # noqa: BLE001 – keep the plot alive
             warnings.append(f"#{i} error: {exc}")
     return warnings
+
+
+# ── Moving labels ─────────────────────────────────────────────────────────────
+
+def move_label(ann: Annotation, dpx: float, dpy: float,
+               host_ax, axes_by_col, dpi: float) -> Annotation:
+    """
+    Return a copy of `ann` with its text moved by (dpx, dpy) display pixels.
+
+    Text boxes and arrow text move their real coordinate (so they stay put
+    relative to the data); every other kind adjusts its point nudge.
+    """
+    new = replace(ann)
+    coord_fields = TEXT_AT_COORD.get(ann.kind)
+    if coord_fields:
+        xn, yn = coord_fields
+        t = point_transform(ann.y_ref, host_ax, axes_by_col)
+        px, py = t.transform((getattr(ann, xn), getattr(ann, yn)))
+        x, y = t.inverted().transform((px + dpx, py + dpy))
+        setattr(new, xn, float(x))
+        setattr(new, yn, float(y))
+    else:
+        scale = 72.0 / dpi
+        new.text_dx = round(ann.text_dx + dpx * scale, 1)
+        new.text_dy = round(ann.text_dy + dpy * scale, 1)
+    return new

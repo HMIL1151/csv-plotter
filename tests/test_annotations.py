@@ -111,5 +111,69 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(len(warnings), 1)
 
 
+class LabelMoveTests(unittest.TestCase):
+    def _render_one(self, ann):
+        fig, host, twin, axes = _make_plot()
+        artists = {}
+        an.render_annotations([ann], host, axes, twin, label_artists=artists)
+        fig.canvas.draw()
+        return fig, host, axes, artists
+
+    def test_label_artists_are_reported_by_index(self):
+        _fig, _host, _axes, artists = self._render_one(
+            an.Annotation(kind=an.MARKER, text="pt", x=5, y=50, y_ref="a"))
+        self.assertEqual(artists[0].get_text(), "pt")
+
+    def test_unlabelled_annotations_have_no_artist(self):
+        _fig, _host, _axes, artists = self._render_one(
+            an.Annotation(kind=an.VLINE, x=5, text=""))
+        self.assertEqual(artists, {})
+
+    def test_nudge_shifts_label_and_adds_leader(self):
+        base = an.Annotation(kind=an.MARKER, text="pt", x=5, y=50, y_ref="a")
+        _f, _h, _a, plain = self._render_one(base)
+        nudged = an.Annotation(kind=an.MARKER, text="pt", x=5, y=50, y_ref="a",
+                               text_dx=20, text_dy=-10)
+        _f, _h, _a, moved = self._render_one(nudged)
+        (px, py), (mx, my) = plain[0].xyann, moved[0].xyann
+        self.assertAlmostEqual(mx - px, 20)
+        self.assertAlmostEqual(my - py, -10)
+        self.assertIsNone(plain[0].arrow_patch)
+        self.assertIsNotNone(moved[0].arrow_patch)
+
+    def test_leader_can_be_disabled(self):
+        _f, _h, _a, artists = self._render_one(an.Annotation(
+            kind=an.MARKER, text="pt", x=5, y=50, y_ref="a", text_dx=30, leader=False))
+        self.assertIsNone(artists[0].arrow_patch)
+
+    def test_move_label_nudges_offset_in_points(self):
+        fig, host, axes, _ = self._render_one(an.Annotation())
+        ann = an.Annotation(kind=an.XSPAN, text="s", x=1, x2=2, text_dx=5)
+        new = an.move_label(ann, 100, -50, host, axes, dpi=100)
+        self.assertAlmostEqual(new.text_dx, 5 + 72)
+        self.assertAlmostEqual(new.text_dy, -36)
+        self.assertEqual((new.x, new.x2), (1, 2))
+        self.assertEqual(ann.text_dx, 5)   # original untouched
+
+    def test_move_label_moves_arrow_text_coordinate(self):
+        fig, host, axes, _ = self._render_one(an.Annotation())
+        ann = an.Annotation(kind=an.ARROW, x=1, y=10, x2=5, y2=50, y_ref="a")
+        px, py = host.transData.transform((5, 50))
+        tx, ty = host.transData.transform((6, 60))
+        new = an.move_label(ann, tx - px, ty - py, host, axes, dpi=100)
+        self.assertAlmostEqual(new.x2, 6)
+        self.assertAlmostEqual(new.y2, 60)
+        self.assertEqual((new.x, new.y), (1, 10))   # arrow tip stays put
+
+    def test_move_label_moves_text_box_coordinate(self):
+        fig, host, axes, _ = self._render_one(an.Annotation())
+        ann = an.Annotation(kind=an.TEXT, x=5, y=0.5)
+        dx, _ = host.transData.transform((6, 0)) - host.transData.transform((5, 0))
+        new = an.move_label(ann, dx, 0, host, axes, dpi=100)
+        self.assertAlmostEqual(new.x, 6)
+        self.assertAlmostEqual(new.y, 0.5)
+        self.assertEqual((new.text_dx, new.text_dy), (0, 0))
+
+
 if __name__ == "__main__":
     unittest.main()
